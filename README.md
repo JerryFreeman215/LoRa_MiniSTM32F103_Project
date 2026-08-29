@@ -84,3 +84,37 @@ ELF. Useful counters include received bytes, valid frames, forwarded frames,
 drops, parser timeouts, UART errors, and vehicle return bytes. PA8 toggles every
 500 ms while the main loop is running. A fast PA8 blink indicates the error
 handler.
+
+## Keyboard vehicle test
+
+The keyboard console is copied unchanged from the proven STM32H750 test
+project. It uses COM8 at 9600 baud and adds the directed LoRa header
+`00 01 17` before the original AGV `CONTROL_CMD` frame.
+
+Before starting:
+
+1. Remove both P3 jumpers that connect PA9/PA10 to the onboard CH340.
+2. Connect PA9 to the vehicle MCU RX, PA10 to MCU TX, and connect GND to GND.
+3. Confirm that both UART interfaces use 3.3 V TTL levels.
+4. Close XCOM or any other program using COM8.
+5. Keep the first test short and ensure the vehicle has a clear path.
+
+Start the console by double-clicking `tools/start_control_console.cmd`, or run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\control_console.ps1
+```
+
+Default test values remain conservative: PWM 8/8, 5 pulses, and an automatic
+lock 500 ms after a RUN frame.
+
+| Key | Action |
+| --- | --- |
+| A | Arm one RUN command |
+| R | Send one RUN command, only after A |
+| L or Space | Send the lock burst immediately |
+| Q | Send the lock burst and exit |
+
+The console sends a lock burst when it starts, after the automatic timeout,
+when L/Space/Q is pressed, and again during normal cleanup. Each session writes
+a timestamped `control_tx_*.csv` log beside the script.
