@@ -19,7 +19,17 @@
 #define AGV_FRAME_TAIL_1 0x0AU
 #define AGV_FRAME_OVERHEAD 10U
 #define AGV_RX_INTERBYTE_TIMEOUT_MS 250U
+#define AGV_CONTROL_FRAME_SIZE 38U
+#define AGV_CONTROL_TYPE 0x11U
+#define AGV_FRAME_TYPE_OFFSET 4U
+#define AGV_CONTROL_FLAGS_OFFSET 18U
+#define AGV_CONTROL_LEFT_PWM_OFFSET 22U
+#define AGV_CONTROL_RIGHT_PWM_OFFSET 23U
+#define AGV_CONTROL_PULSES_OFFSET 26U
 #define VEHICLE_TX_TIMEOUT_MS 20U
+#define CONTINUOUS_RUN_TIMEOUT_MS 10000U
+#define SAFETY_LOCK_REPEAT_COUNT 3U
+#define SAFETY_LOCK_INTERVAL_MS 10U
 #define STATUS_LED_INTERVAL_MS 500U
 
 UART_HandleTypeDef huart1;
@@ -37,6 +47,19 @@ static volatile uint16_t parser_expected_length;
 static volatile uint16_t pending_frame_length;
 static volatile uint8_t pending_frame_ready;
 static volatile uint32_t parser_last_byte_tick;
+static uint8_t safety_watchdog_active;
+static uint32_t safety_watchdog_deadline;
+
+static const uint8_t safety_lock_frame[AGV_CONTROL_FRAME_SIZE] = {
+  0xAAU, 0x55U, 0x1CU, 0x00U, 0x11U, 0x01U,
+  0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+  0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+  0x07U, 0x00U, 0x00U, 0x00U,
+  0x00U, 0x00U, 0x00U, 0x00U,
+  0x00U, 0x00U, 0x00U, 0x00U,
+  0x00U, 0x00U, 0x00U, 0x00U,
+  0x38U, 0xC3U, 0x0DU, 0x0AU
+};
 
 static void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
@@ -46,6 +69,9 @@ static void Agv_ResetParser(void);
 static void Agv_ProcessRxByte(uint8_t byte);
 static void Agv_CheckParserTimeout(void);
 static void Agv_ForwardPendingFrame(void);
+static void Agv_UpdateSafetyWatchdog(const uint8_t *frame,
+                                     uint16_t frame_length);
+static void Agv_CheckSafetyTimeout(void);
 
 int main(void)
 {
@@ -84,6 +110,7 @@ int main(void)
 
     Agv_CheckParserTimeout();
     Agv_ForwardPendingFrame();
+    Agv_CheckSafetyTimeout();
 
     aux_state = HAL_GPIO_ReadPin(LORA_AUX_GPIO_Port, LORA_AUX_Pin);
     if ((aux_state == GPIO_PIN_SET) &&
@@ -346,10 +373,85 @@ static void Agv_ForwardPendingFrame(void)
                         VEHICLE_TX_TIMEOUT_MS) == HAL_OK)
   {
     gateway_stats.frames_forwarded++;
+    Agv_UpdateSafetyWatchdog(frame_copy, frame_length);
   }
   else
   {
     gateway_stats.forward_errors++;
+  }
+}
+
+static void Agv_UpdateSafetyWatchdog(const uint8_t *frame,
+                                     uint16_t frame_length)
+{
+  uint32_t pulses;
+  uint8_t flags;
+  int8_t left_pwm;
+  int8_t right_pwm;
+
+  if ((frame_length != AGV_CONTROL_FRAME_SIZE) ||
+      (frame[AGV_FRAME_TYPE_OFFSET] != AGV_CONTROL_TYPE))
+  {
+    return;
+  }
+
+  flags = frame[AGV_CONTROL_FLAGS_OFFSET];
+  left_pwm = (int8_t)frame[AGV_CONTROL_LEFT_PWM_OFFSET];
+  right_pwm = (int8_t)frame[AGV_CONTROL_RIGHT_PWM_OFFSET];
+  pulses = (uint32_t)frame[AGV_CONTROL_PULSES_OFFSET] |
+           ((uint32_t)frame[AGV_CONTROL_PULSES_OFFSET + 1U] << 8U) |
+           ((uint32_t)frame[AGV_CONTROL_PULSES_OFFSET + 2U] << 16U) |
+           ((uint32_t)frame[AGV_CONTROL_PULSES_OFFSET + 3U] << 24U);
+
+  if (((flags & 0x07U) == 0U) &&
+      ((left_pwm != 0) || (right_pwm != 0)) &&
+      (pulses == 0U))
+  {
+    safety_watchdog_active = 1U;
+    safety_watchdog_deadline = HAL_GetTick() + CONTINUOUS_RUN_TIMEOUT_MS;
+  }
+  else
+  {
+    safety_watchdog_active = 0U;
+  }
+  gateway_stats.safety_watchdog_active = safety_watchdog_active;
+}
+
+static void Agv_CheckSafetyTimeout(void)
+{
+  uint32_t now;
+
+  if (safety_watchdog_active == 0U)
+  {
+    return;
+  }
+
+  now = HAL_GetTick();
+  if ((int32_t)(now - safety_watchdog_deadline) < 0)
+  {
+    return;
+  }
+
+  safety_watchdog_active = 0U;
+  gateway_stats.safety_watchdog_active = 0U;
+
+  for (uint32_t index = 0U; index < SAFETY_LOCK_REPEAT_COUNT; index++)
+  {
+    if (HAL_UART_Transmit(&huart1, (uint8_t *)safety_lock_frame,
+                          sizeof(safety_lock_frame),
+                          VEHICLE_TX_TIMEOUT_MS) == HAL_OK)
+    {
+      gateway_stats.safety_lock_frames_sent++;
+    }
+    else
+    {
+      gateway_stats.safety_lock_errors++;
+    }
+
+    if ((index + 1U) < SAFETY_LOCK_REPEAT_COUNT)
+    {
+      HAL_Delay(SAFETY_LOCK_INTERVAL_MS);
+    }
   }
 }
 

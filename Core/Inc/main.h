@@ -35,11 +35,14 @@ typedef struct
   volatile uint32_t vehicle_rx_bytes;
   volatile uint32_t vehicle_uart_errors;
   volatile uint32_t aux_busy_edges;
+  volatile uint32_t safety_lock_frames_sent;
+  volatile uint32_t safety_lock_errors;
   volatile uint16_t parser_index;
   volatile uint16_t pending_length;
   volatile uint16_t last_frame_length;
   volatile uint8_t pending;
   volatile uint8_t last_vehicle_rx_byte;
+  volatile uint8_t safety_watchdog_active;
 } GatewayStats;
 
 extern volatile GatewayState gateway_state;

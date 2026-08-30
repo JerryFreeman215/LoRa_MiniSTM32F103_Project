@@ -3,8 +3,9 @@
 Target board: ALIENTEK MiniSTM32 V4 with STM32F103RCT6.
 
 This firmware receives complete AGV `CONTROL_CMD` frames from LoRa B and
-forwards them unchanged to the vehicle MCU. It never creates a motion or lock
-frame by itself.
+forwards them unchanged to the vehicle MCU. A continuous command (`pulses=0`)
+arms a local 10-second safety watchdog. If the timeout expires, the gateway
+sends three lock frames directly to the vehicle MCU.
 
 ## Hardware mapping
 
@@ -81,15 +82,15 @@ The script programs the ELF, verifies Flash, resets the target, and exits.
 
 The global symbols `gateway_state` and `gateway_stats` remain available in the
 ELF. Useful counters include received bytes, valid frames, forwarded frames,
-drops, parser timeouts, UART errors, and vehicle return bytes. PA8 toggles every
-500 ms while the main loop is running. A fast PA8 blink indicates the error
-handler.
+drops, parser timeouts, UART errors, vehicle return bytes, watchdog state,
+safety lock frames, and safety lock errors. PA8 toggles every 500 ms while the
+main loop is running. A fast PA8 blink indicates the error handler.
 
 ## Keyboard vehicle test
 
-The keyboard console is copied unchanged from the proven STM32H750 test
-project. It uses COM8 at 9600 baud and adds the directed LoRa header
-`00 01 17` before the original AGV `CONTROL_CMD` frame.
+The keyboard console uses COM8 at 9600 baud and adds the directed LoRa header
+`00 01 17` before the original AGV `CONTROL_CMD` frame. The target address and
+channel are script parameters and can be changed without rebuilding firmware.
 
 Before starting:
 
@@ -105,16 +106,18 @@ Start the console by double-clicking `tools/start_control_console.cmd`, or run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\control_console.ps1
 ```
 
-Default test values remain conservative: PWM 8/8, 5 pulses, and an automatic
-lock 500 ms after a RUN frame.
+The current baseline uses PWM 8/8 and `pulses=0` for continuous motion. Both
+the PC console and the gateway apply a 10-second safety timeout. The gateway
+timeout is local and does not depend on the LoRa link remaining available.
 
 | Key | Action |
 | --- | --- |
-| A | Arm one RUN command |
-| R | Send one RUN command, only after A |
+| A | Arm the continuous RUN command |
+| R | Start continuous motion, only after A |
 | L or Space | Send the lock burst immediately |
 | Q | Send the lock burst and exit |
 
-The console sends a lock burst when it starts, after the automatic timeout,
+The console sends a lock burst when it starts, after the PC safety timeout,
 when L/Space/Q is pressed, and again during normal cleanup. Each session writes
-a timestamped `control_tx_*.csv` log beside the script.
+a timestamped CSV file under `logs/runtime/`. The verified single-vehicle
+baseline logs are retained under `logs/single_vehicle_baseline_20260829/`.

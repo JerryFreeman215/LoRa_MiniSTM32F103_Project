@@ -6,9 +6,9 @@ param(
   [ValidateRange(0, 100)]
   [int]$RightPwm = 8,
   [ValidateRange(0, 100000)]
-  [uint32]$Pulses = 5,
-  [ValidateRange(100, 10000)]
-  [int]$AutoLockMs = 500,
+  [uint32]$Pulses = 0,
+  [ValidateRange(1000, 60000)]
+  [int]$SafetyLockMs = 10000,
   [ValidateRange(1, 10)]
   [int]$LockRepeat = 3,
   [ValidateRange(20, 1000)]
@@ -113,7 +113,14 @@ $lockPacket = New-ControlPacket `
 
 if ([string]::IsNullOrWhiteSpace($LogPath)) {
   $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
-  $LogPath = Join-Path $PSScriptRoot "control_tx_$stamp.csv"
+  $runtimeLogDirectory = Join-Path (Split-Path $PSScriptRoot -Parent) "logs\runtime"
+  New-Item -ItemType Directory -Path $runtimeLogDirectory -Force | Out-Null
+  $LogPath = Join-Path $runtimeLogDirectory "control_tx_$stamp.csv"
+} else {
+  $customLogDirectory = Split-Path $LogPath -Parent
+  if (-not [string]::IsNullOrWhiteSpace($customLogDirectory)) {
+    New-Item -ItemType Directory -Path $customLogDirectory -Force | Out-Null
+  }
 }
 
 $sessionClock = [System.Diagnostics.Stopwatch]::StartNew()
@@ -121,7 +128,8 @@ $port = New-Object System.IO.Ports.SerialPort $PortName, $BaudRate, 'None', 8, '
 $port.WriteTimeout = 1000
 $port.ReadTimeout = 100
 $armed = $false
-$autoLockDueMs = -1.0
+$motionActive = $false
+$safetyLockDueMs = -1.0
 
 function Write-TxLog {
   param(
@@ -133,6 +141,10 @@ function Write-TxLog {
     [double]$WriteUs
   )
 
+  $loggedLeftPwm = if ($Event -eq "LOCK") { 0 } else { $LeftPwm }
+  $loggedRightPwm = if ($Event -eq "LOCK") { 0 } else { $RightPwm }
+  $loggedPulses = if ($Event -eq "LOCK") { 0 } else { $Pulses }
+
   $record = [PSCustomObject]@{
     tx_start_utc = $TxStartUtc.ToString("o")
     tx_start_ms = [Math]::Round($TxStartMs, 3)
@@ -141,9 +153,9 @@ function Write-TxLog {
     bytes = $Bytes
     write_us = [Math]::Round($WriteUs, 1)
     uart_wire_ms = [Math]::Round(($Bytes * 10.0 * 1000.0) / $BaudRate, 3)
-    left_pwm = $LeftPwm
-    right_pwm = $RightPwm
-    pulses = $Pulses
+    left_pwm = $loggedLeftPwm
+    right_pwm = $loggedRightPwm
+    pulses = $loggedPulses
   }
   $record | Export-Csv -LiteralPath $LogPath -NoTypeInformation -Append
 }
@@ -182,12 +194,12 @@ function Send-LockBurst {
 
 Write-Host "STM32 LoRa vehicle control console"
 Write-Host "Port=$PortName Baud=$BaudRate Target=$($TargetAddrHigh.ToString('X2')):$($TargetAddrLow.ToString('X2')) Channel=0x$($Channel.ToString('X2'))"
-Write-Host "RUN: PWM=$LeftPwm/$RightPwm Pulses=$Pulses AutoLock=${AutoLockMs}ms"
+Write-Host "RUN: PWM=$LeftPwm/$RightPwm Pulses=$Pulses Continuous SafetyLock=${SafetyLockMs}ms"
 Write-Host "RUN packet:  $(ConvertTo-HexString $runPacket)"
 Write-Host "LOCK packet: $(ConvertTo-HexString $lockPacket)"
 Write-Host "Log: $LogPath"
 Write-Host ""
-Write-Host "Keys: A=arm one RUN, R=send RUN, L/Space=lock now, Q=lock and quit"
+Write-Host "Keys: A=arm, R=start continuous RUN, L/Space=lock now, Q=lock and quit"
 
 if ($DryRun) {
   Write-Host "DryRun enabled. No serial data sent."
@@ -200,56 +212,65 @@ try {
   Send-LockBurst -Reason "startup"
 
   while ($true) {
-    if (($autoLockDueMs -ge 0.0) -and
-        ($sessionClock.Elapsed.TotalMilliseconds -ge $autoLockDueMs)) {
-      Send-LockBurst -Reason "automatic timeout"
-      $autoLockDueMs = -1.0
-      $armed = $false
-    }
-
-    if (-not [Console]::KeyAvailable) {
-      Start-Sleep -Milliseconds 5
-      continue
-    }
-
-    $key = [Console]::ReadKey($true)
-    switch ($key.Key) {
-      'A' {
-        $armed = $true
-        Write-Host "ARMED for one RUN command. Press R to send or L to cancel."
-      }
-      'R' {
-        if (-not $armed) {
-          Write-Host "RUN blocked. Press A first."
-          continue
+    if ([Console]::KeyAvailable) {
+      $key = [Console]::ReadKey($true)
+      switch ($key.Key) {
+        'A' {
+          if ($motionActive) {
+            Write-Host "Continuous motion is active. Press L or Space before arming again."
+          } else {
+            $armed = $true
+            Write-Host "ARMED. Press R to start continuous RUN or L to cancel."
+          }
         }
-        Send-Packet -Event "RUN" -Packet $runPacket
-        $armed = $false
-        $autoLockDueMs = $sessionClock.Elapsed.TotalMilliseconds + $AutoLockMs
-        Write-Host "RUN sent. Automatic lock scheduled in $AutoLockMs ms."
+        'R' {
+          if (-not $armed) {
+            Write-Host "RUN blocked. Press A first."
+            continue
+          }
+          Send-Packet -Event "RUN" -Packet $runPacket
+          $armed = $false
+          $motionActive = $true
+          $safetyLockDueMs = $sessionClock.Elapsed.TotalMilliseconds + $SafetyLockMs
+          Write-Host "Continuous RUN sent. Press L or Space to lock."
+        }
+        'L' {
+          $motionActive = $false
+          $armed = $false
+          $safetyLockDueMs = -1.0
+          Send-LockBurst -Reason "manual"
+        }
+        'Spacebar' {
+          $motionActive = $false
+          $armed = $false
+          $safetyLockDueMs = -1.0
+          Send-LockBurst -Reason "manual"
+        }
+        'Q' {
+          $motionActive = $false
+          $safetyLockDueMs = -1.0
+          Send-LockBurst -Reason "exit"
+          break
+        }
+        default {
+          Write-Host "Unknown key. A=arm, R=start, L/Space=lock, Q=quit"
+        }
       }
-      'L' {
-        Send-LockBurst -Reason "manual"
-        $autoLockDueMs = -1.0
-        $armed = $false
-      }
-      'Spacebar' {
-        Send-LockBurst -Reason "manual"
-        $autoLockDueMs = -1.0
-        $armed = $false
-      }
-      'Q' {
-        Send-LockBurst -Reason "exit"
+
+      if ($key.Key -eq 'Q') {
         break
       }
-      default {
-        Write-Host "Unknown key. A=arm, R=run, L/Space=lock, Q=quit"
-      }
     }
 
-    if ($key.Key -eq 'Q') {
-      break
+    if ($motionActive -and
+        ($sessionClock.Elapsed.TotalMilliseconds -ge $safetyLockDueMs)) {
+      $motionActive = $false
+      $safetyLockDueMs = -1.0
+      Send-LockBurst -Reason "safety timeout"
+      Write-Host "Safety lock sent. Press A then R for another finite motion."
     }
+
+    Start-Sleep -Milliseconds 5
   }
 } finally {
   if ($port.IsOpen) {
