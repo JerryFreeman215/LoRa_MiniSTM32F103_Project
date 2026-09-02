@@ -8,7 +8,7 @@ param(
   [ValidateRange(0, 100000)]
   [uint32]$Pulses = 0,
   [ValidateRange(1000, 60000)]
-  [int]$SafetyLockMs = 10000,
+  [int]$SafetyLockMs = 58000,
   [ValidateRange(1, 10)]
   [int]$LockRepeat = 3,
   [ValidateRange(20, 1000)]
@@ -130,6 +130,7 @@ $port.ReadTimeout = 100
 $armed = $false
 $motionActive = $false
 $safetyLockDueMs = -1.0
+$finalLockRequired = $true
 
 function Write-TxLog {
   param(
@@ -250,6 +251,7 @@ try {
           $motionActive = $false
           $safetyLockDueMs = -1.0
           Send-LockBurst -Reason "exit"
+          $finalLockRequired = $false
           break
         }
         default {
@@ -267,17 +269,19 @@ try {
       $motionActive = $false
       $safetyLockDueMs = -1.0
       Send-LockBurst -Reason "safety timeout"
-      Write-Host "Safety lock sent. Press A then R for another finite motion."
+      Write-Host "Safety lock sent. Press A then R for another continuous motion."
     }
 
     Start-Sleep -Milliseconds 5
   }
 } finally {
   if ($port.IsOpen) {
-    try {
-      Send-LockBurst -Reason "final cleanup"
-    } catch {
-      Write-Warning "Final lock burst failed: $($_.Exception.Message)"
+    if ($finalLockRequired) {
+      try {
+        Send-LockBurst -Reason "abnormal cleanup"
+      } catch {
+        Write-Warning "Final lock burst failed: $($_.Exception.Message)"
+      }
     }
     $port.Close()
   }

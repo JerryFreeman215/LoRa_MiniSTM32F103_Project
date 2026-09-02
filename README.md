@@ -4,8 +4,19 @@ Target board: ALIENTEK MiniSTM32 V4 with STM32F103RCT6.
 
 This firmware receives complete AGV `CONTROL_CMD` frames from LoRa B and
 forwards them unchanged to the vehicle MCU. A continuous command (`pulses=0`)
-arms a local 10-second safety watchdog. If the timeout expires, the gateway
+arms a local 60-second safety watchdog. If the timeout expires, the gateway
 sends three lock frames directly to the vehicle MCU.
+
+## Clone
+
+```powershell
+git clone https://github.com/JerryFreeman215/MiniSTM32F103_Gateway.git
+cd MiniSTM32F103_Gateway
+```
+
+The repository root contains this README, the STM32CubeIDE project, firmware
+sources, build and JTAG flashing scripts, PC control tools, and retained
+validation records.
 
 ## Hardware mapping
 
@@ -106,9 +117,10 @@ Start the console by double-clicking `tools/start_control_console.cmd`, or run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\control_console.ps1
 ```
 
-The current baseline uses PWM 8/8 and `pulses=0` for continuous motion. Both
-the PC console and the gateway apply a 10-second safety timeout. The gateway
-timeout is local and does not depend on the LoRa link remaining available.
+The current baseline uses PWM 8/8 and `pulses=0` for continuous motion. The PC
+console sends a soft safety lock after 58 seconds. The gateway enforces a local
+60-second hard limit, leaving two seconds for the directed lock frames to cross
+the LoRa link before local fallback is required.
 
 | Key | Action |
 | --- | --- |
@@ -121,3 +133,61 @@ The console sends a lock burst when it starts, after the PC safety timeout,
 when L/Space/Q is pressed, and again during normal cleanup. Each session writes
 a timestamped CSV file under `logs/runtime/`. The verified single-vehicle
 baseline logs are retained under `logs/single_vehicle_baseline_20260829/`.
+
+## Multi-vehicle control
+
+Both vehicles use the same gateway firmware. Their LoRa receivers use unique
+directed addresses, configured in `tools/vehicles.psd1`:
+
+| Key | Vehicle | Directed target |
+| --- | --- | --- |
+| 1 | Vehicle 1 | `00:01:17` |
+| 2 | Vehicle 2 | `00:02:17` |
+
+Start the multi-vehicle console with:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\multi_vehicle_console.ps1
+```
+
+or double-click `tools/start_multi_vehicle_console.cmd`.
+
+For a continuous outdoor communication test, use the separate launcher:
+
+```text
+tools\start_multi_vehicle_continuous_console.cmd
+```
+
+It explicitly uses `pulses=0`, keeps the PC-side 58-second soft lock, and
+relies on the gateway's independent 60-second hard lock as the final timeout.
+The regular multi-vehicle launcher remains the short `pulses=50` test.
+
+The controller maintains one active scope: Vehicle 1, Vehicle 2, or ALL.
+Single-vehicle scopes use directed unicast headers `00:01:17` and `00:02:17`.
+The ALL scope sends one directed broadcast per configured channel using the
+reserved target `FF:FF:<channel>`, so every receiver on that channel gets the
+same AGV frame from one LoRa transmission. Changing scope first locks the
+active scope. Repeated RUN commands are blocked until the active scope has
+been locked. `L` locks the active or selected scope. Space, startup, exit, and
+abnormal cleanup send a three-round directed broadcast lock burst. A normal Q
+exit does not send a duplicate cleanup burst after its exit lock has completed.
+
+The broadcast target is used only in the transmitted directed header; vehicle
+modules retain their unique local addresses. See
+`logs/directed_broadcast_validation_20260830/design_change_report.md` for the
+protocol basis, failed sequential-unicast timing evidence, successful vehicle
+test, and safety boundaries.
+
+| Key | Action |
+| --- | --- |
+| 0 | Select ALL vehicles as one group |
+| 1 / 2 | Select one vehicle by directed address |
+| A | Arm the selected vehicle or group |
+| R | Start the selected scope, only after A |
+| L | Lock the active or selected scope |
+| Space | Emergency lock all vehicles |
+| Q | Lock all vehicles and exit |
+
+Only one console may open COM8 at a time. Multi-vehicle logs are written to
+`logs/runtime/multi_control_tx_*.csv` and include the vehicle ID, name, target,
+event, and reason for every transmitted frame.

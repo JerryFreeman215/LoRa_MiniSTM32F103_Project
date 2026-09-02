@@ -16,5 +16,13 @@ The last record verifies the PC-side continuous command flow: three
 10-second safety lock events. PC logs prove serial transmission only; they do
 not independently confirm LoRa reception or vehicle MCU execution.
 
+These retained records were captured with the earlier 10-second safety
+baseline. The current PC consoles issue a soft lock at 58 seconds, and the
+gateway firmware enforces a 60-second local hard limit.
+
 New console sessions are written to `runtime/`. That directory is ignored by
 Git so routine tests do not dirty the repository.
+
+`directed_broadcast_validation_20260830/` preserves the failed sequential
+unicast log, successful directed-broadcast log, and the design change report
+that established the multi-vehicle group-control baseline.
