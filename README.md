@@ -1,4 +1,4 @@
-# MiniSTM32F103 LoRa AGV Gateway
+# LoRa MiniSTM32F103 Project
 
 Target board: ALIENTEK MiniSTM32 V4 with STM32F103RCT6.
 
@@ -10,8 +10,8 @@ sends three lock frames directly to the vehicle MCU.
 ## Clone
 
 ```powershell
-git clone https://github.com/JerryFreeman215/MiniSTM32F103_Gateway.git
-cd MiniSTM32F103_Gateway
+git clone https://github.com/JerryFreeman215/LoRa_MiniSTM32F103_Project.git
+cd LoRa_MiniSTM32F103_Project
 ```
 
 The repository root contains this README, the STM32CubeIDE project, firmware
